@@ -1,0 +1,186 @@
+name: Build uniLoader for Exynos850
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential gcc-aarch64-linux-gnu \
+            git bc bison flex libssl-dev \
+            libelf-dev cpio gzip xz-utils file
+
+      - name: Clone uniLoader
+        run: |
+          git clone \
+            https://github.com/samsungexynos850/uniLoader.git \
+            uniLoader
+          cd uniLoader
+          git rev-parse HEAD > ../uniloader-commit.txt
+
+      - name: Select A21s configuration
+        id: config
+        run: |
+          set -eu
+          cd uniLoader
+
+          echo "=== Available defconfigs ==="
+          find configs -maxdepth 1 -type f \
+            -name '*defconfig' -printf '%f\n' | sort
+
+          NAME="a21s_defconfig"
+
+          if [ ! -f "configs/$NAME" ]; then
+            echo "::error::configs/$NAME not found in uniLoader."
+            exit 1
+          fi
+
+          echo "Selected configuration: $NAME"
+          echo "defconfig=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Download previous kernel artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+
+          RUN_ID="$(gh run list \
+            --workflow a21s-linux.yml \
+            --status success \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId')"
+
+          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+            echo "::error::No successful kernel workflow run found."
+            exit 1
+          fi
+
+          gh run download "$RUN_ID" \
+            --name a21s-linux-kernel \
+            --dir kernel-artifact
+
+          gh run download "$RUN_ID" \
+            --name alpine-aarch64-rootfs \
+            --dir alpine-artifact
+
+          IMAGE="$(find kernel-artifact -type f \
+            -name Image -print -quit)"
+          DTB="$(find kernel-artifact -type f \
+            -name exynos850-a217f.dtb -print -quit)"
+          ROOTFS="$(find alpine-artifact -type f \
+            -name alpine-minirootfs.tar.gz -print -quit)"
+
+          test -s "$IMAGE"
+          test -s "$DTB"
+          test -s "$ROOTFS"
+
+          mkdir -p uniLoader/blob
+          cp "$IMAGE" uniLoader/blob/Image
+          cp "$DTB" uniLoader/blob/dtb
+
+          echo "$ROOTFS" > rootfs-archive-path.txt
+
+      - name: Prepare Alpine initramfs
+        run: |
+          set -eu
+
+          ROOTFS="$(cat rootfs-archive-path.txt)"
+          mkdir -p initramfs
+          tar -xzf "$ROOTFS" -C initramfs
+
+          cat > initramfs/init <<'INIT'
+          #!/bin/sh
+          export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+          mount -t proc proc /proc
+          mount -t sysfs sysfs /sys
+          mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+
+          mkdir -p /newroot
+          echo "Alpine initramfs: looking for SD rootfs..."
+
+          for part in /dev/mmcblk1p2 /dev/mmcblk1p1; do
+            if [ -b "$part" ] &&
+               mount -t ext4 "$part" /newroot; then
+              if [ -x /newroot/sbin/init ]; then
+                exec switch_root /newroot /sbin/init
+              fi
+              umount /newroot
+            fi
+          done
+
+          echo "SD rootfs not found. Entering rescue shell."
+          exec /bin/sh
+          INIT
+
+          chmod 0755 initramfs/init
+
+          cd initramfs
+          find . -print0 | cpio --null -o -H newc \
+            | gzip -1 > ../uniLoader/blob/ramdisk
+
+          cd ..
+          ls -lh uniLoader/blob/
+
+      - name: Configure and build uniLoader
+        env:
+          DEFCONFIG: ${{ steps.config.outputs.defconfig }}
+        run: |
+          set -eu
+          cd uniLoader
+
+          make ARCH=aarch64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            "$DEFCONFIG"
+
+          make -j"$(nproc)" \
+            ARCH=aarch64 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            KERNEL_PATH=blob/Image \
+            DT_PATH=blob/dtb \
+            RAMDISK_PATH=blob/ramdisk
+
+          test -s uniLoader
+          file uniLoader
+          sha256sum uniLoader > ../uniloader-sha256.txt
+
+          mkdir -p ../out
+          cp uniLoader ../out/
+          cp .config ../out/uniloader.config
+
+          if [ -f uniLoader.gz ]; then
+            cp uniLoader.gz ../out/
+          fi
+          if [ -f uniLoader.lz4 ]; then
+            cp uniLoader.lz4 ../out/
+          fi
+
+          cp ../uniloader-commit.txt ../out/
+          cp ../uniloader-sha256.txt ../out/
+
+          {
+            echo "Target: Samsung Galaxy A21s SM-A217F"
+            echo "SoC: Exynos 850"
+            echo "Defconfig: $DEFCONFIG"
+            echo "Boot status: not tested"
+            echo "Flashing status: not approved"
+          } > ../out/build-info.txt
+
+      - name: Upload uniLoader artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: uniloader-exynos850-test
+          path: out/
+          if-no-files-found: error
+          retention-days: 14
