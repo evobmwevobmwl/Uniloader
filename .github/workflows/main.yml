@@ -30,7 +30,7 @@ jobs:
           cd uniLoader
           git rev-parse HEAD > ../uniloader-commit.txt
 
-      - name: Find board configurations
+            - name: Select A21s configuration
         id: config
         run: |
           set -eu
@@ -40,28 +40,15 @@ jobs:
           find configs -maxdepth 1 -type f \
             -name '*defconfig' -printf '%f\n' | sort
 
-          CONFIG=""
+          NAME="a21s_defconfig"
 
-          for pattern in '*a217f*defconfig' '*a21s*defconfig'; do
-            candidate="$(find configs -maxdepth 1 \
-              -iname "$pattern" -print -quit)"
-            if [ -n "$candidate" ]; then
-              CONFIG="$candidate"
-              break
-            fi
-          done
-
-          if [ -z "$CONFIG" ]; then
-            for pattern in '*a12*defconfig' '*a127f*defconfig' \
-                           '*a135f*defconfig' '*exynos850*defconfig'; do
-              candidate="$(find configs -maxdepth 1 \
-                -iname "$pattern" -print -quit)"
-              if [ -n "$candidate" ]; then
-                CONFIG="$candidate"
-                break
-              fi
-            done
+          if [ ! -f "configs/$NAME" ]; then
+            echo "::error::configs/$NAME not found in uniLoader."
+            exit 1
           fi
+
+          echo "Selected configuration: $NAME"
+          echo "defconfig=$NAME" >> "$GITHUB_OUTPUT"
 
           if [ -z "$CONFIG" ]; then
             echo "::error::No matching Exynos850 board defconfig found."
