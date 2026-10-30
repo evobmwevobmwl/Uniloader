@@ -52,10 +52,12 @@ jobs:
       - name: Download previous kernel artifact
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -eu
 
           RUN_ID="$(gh run list \
+            --repo "$GH_REPO" \
             --workflow a21s-linux.yml \
             --status success \
             --limit 1 \
@@ -68,10 +70,12 @@ jobs:
           fi
 
           gh run download "$RUN_ID" \
+            --repo "$GH_REPO" \
             --name a21s-linux-kernel \
             --dir kernel-artifact
 
           gh run download "$RUN_ID" \
+            --repo "$GH_REPO" \
             --name alpine-aarch64-rootfs \
             --dir alpine-artifact
 
@@ -184,3 +188,4 @@ jobs:
           path: out/
           if-no-files-found: error
           retention-days: 14
+           
