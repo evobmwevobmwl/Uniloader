@@ -32,7 +32,7 @@ jobs:
 
             - name: Select A21s configuration
         id: config
-        run: |
+       run: |
           set -eu
           cd uniLoader
 
